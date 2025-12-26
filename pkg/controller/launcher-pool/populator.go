@@ -44,11 +44,6 @@ import (
 
 const ControllerName = "launcher-pool-populator"
 
-const (
-	LauncherComponentAnnotationKey   = "app.kubernetes.io/component"
-	LauncherComponentAnnotationValue = "launcher"
-)
-
 type Controller interface {
 	Start(context.Context) error
 }
@@ -289,7 +284,8 @@ func (ctl *controller) cleanupUnnecessaryLaunchers(ctx context.Context, desired 
 
 	// Get all launcher pods from the namespace
 	launcherLabels := map[string]string{
-		LauncherComponentAnnotationKey: LauncherComponentAnnotationValue,
+		LauncherGeneratedByAnnotationKey: LauncherGeneratedByAnnotationValue,
+		LauncherComponentAnnotationKey:   LauncherComponentAnnotationValue,
 	}
 	pods, err := ctl.podLister.List(labels.SelectorFromSet(launcherLabels))
 	if err != nil {
@@ -355,6 +351,10 @@ func (ctl *controller) cleanupUnnecessaryLaunchers(ctx context.Context, desired 
 					"desired", desiredCount,
 					"excess", excessCount)
 
+				// @TODO Need to prioritize deleting Launcher Pods that do not include inference engines
+				// that are already in Running or Sleeping state
+				// After deleting these Launcher Pods, if the number of deleted Launcher Pods is insufficient,
+				// consider stopping the deletion and provide a warning message
 				if err := ctl.deleteExcessLaunchers(ctx, pods, excessCount); err != nil {
 					logger.Error(err, "Failed to delete excess launcher pods",
 						"node", key.NodeName,
@@ -410,9 +410,10 @@ func (ctl *controller) reconcileLaunchersOnNode(ctx context.Context, key NodeLau
 // getCurrentLaunchersOnNode returns launcher pods for a specific config on a specific node
 func (ctl *controller) getCurrentLaunchersOnNode(ctx context.Context, key NodeLauncherKey) ([]corev1.Pod, error) {
 	launcherLabels := map[string]string{
-		LauncherComponentAnnotationKey:                LauncherComponentAnnotationValue,
-		"app.kubernetes.io/launcher-config-namespace": key.LauncherConfigNamespace,
-		"app.kubernetes.io/launcher-config-name":      key.LauncherConfigName,
+		LauncherGeneratedByAnnotationKey:     LauncherGeneratedByAnnotationValue,
+		LauncherComponentAnnotationKey:       LauncherComponentAnnotationValue,
+		LauncherConfigNamespaceAnnotationKey: key.LauncherConfigNamespace,
+		LauncherConfigNameAnnotationKey:      key.LauncherConfigName,
 	}
 	// Use podLister's List method with label selector
 	pods, err := ctl.podLister.List(labels.SelectorFromSet(launcherLabels))
@@ -490,9 +491,10 @@ func (ctl *controller) buildPodFromTemplate(template corev1.PodTemplateSpec, key
 	if pod.Labels == nil {
 		pod.Labels = make(map[string]string)
 	}
-	pod.Labels["app.kubernetes.io/component"] = "launcher"
-	pod.Labels["app.kubernetes.io/launcher-config-namespace"] = key.LauncherConfigNamespace
-	pod.Labels["app.kubernetes.io/launcher-config-name"] = key.LauncherConfigName
+	pod.Labels[LauncherGeneratedByAnnotationKey] = LauncherGeneratedByAnnotationValue
+	pod.Labels[LauncherComponentAnnotationKey] = LauncherComponentAnnotationValue
+	pod.Labels[LauncherConfigNamespaceAnnotationKey] = key.LauncherConfigNamespace
+	pod.Labels[LauncherConfigNameAnnotationKey] = key.LauncherConfigName
 	// Assign to specific node
 	pod.Spec.NodeName = key.NodeName
 	return pod
