@@ -273,8 +273,98 @@ func (ctl *controller) reconcileAllLaunchers(ctx context.Context, desired map[No
 			// Continue processing other combinations
 		}
 	}
-	// TODO: Clean up unnecessary launcher pods (those that exist in the cluster but not in desired)
-	// This requires tracking which launcher pods were created by us
+	// Clean up unnecessary launcher pods (those that exist in the cluster but not in desired)
+	if err := ctl.cleanupUnnecessaryLaunchers(ctx, desired); err != nil {
+		logger.Error(err, "Failed to cleanup unnecessary launcher pods")
+		return err
+	}
+
+	return nil
+}
+
+// cleanupUnnecessaryLaunchers deletes launcher pods that exist in the cluster but are not in the desired map
+// or when the number of pods exceeds the desired count for a given NodeLauncherKey
+func (ctl *controller) cleanupUnnecessaryLaunchers(ctx context.Context, desired map[NodeLauncherKey]int32) error {
+	logger := klog.FromContext(ctx)
+
+	// Get all launcher pods from the namespace
+	launcherLabels := map[string]string{
+		LauncherComponentAnnotationKey: LauncherComponentAnnotationValue,
+	}
+	pods, err := ctl.podLister.List(labels.SelectorFromSet(launcherLabels))
+	if err != nil {
+		return fmt.Errorf("failed to list launcher pods: %w", err)
+	}
+
+	// Group pods by NodeLauncherKey
+	podsByNodeLauncherKey := make(map[NodeLauncherKey][]corev1.Pod)
+	for _, pod := range pods {
+		// Skip pods that are being deleted
+		if pod.DeletionTimestamp != nil {
+			continue
+		}
+
+		// Extract node name and launcher config info from pod
+		nodeName := pod.Spec.NodeName
+		configNamespace := pod.Labels["app.kubernetes.io/launcher-config-namespace"]
+		configName := pod.Labels["app.kubernetes.io/launcher-config-name"]
+
+		if nodeName == "" || configNamespace == "" || configName == "" {
+			logger.Info("Skipping pod with missing launcher configuration info", "pod", pod.Name)
+			continue
+		}
+
+		key := NodeLauncherKey{
+			NodeName:                nodeName,
+			LauncherConfigName:      configName,
+			LauncherConfigNamespace: configNamespace,
+		}
+
+		podsByNodeLauncherKey[key] = append(podsByNodeLauncherKey[key], *pod)
+	}
+
+	// Process pods for each NodeLauncherKey
+	for key, pods := range podsByNodeLauncherKey {
+		desiredCount, exists := desired[key]
+
+		if !exists {
+			// This key is not in desired, so delete all pods for this key
+			logger.Info("Deleting unnecessary launcher pods (key not in desired)",
+				"node", key.NodeName,
+				"config", key.LauncherConfigName,
+				"namespace", key.LauncherConfigNamespace,
+				"count", len(pods))
+
+			if err := ctl.deleteExcessLaunchers(ctx, pods, len(pods)); err != nil {
+				logger.Error(err, "Failed to delete unnecessary launcher pods",
+					"node", key.NodeName,
+					"config", key.LauncherConfigName)
+				// Continue with other unnecessary pods
+			}
+		} else {
+			// Key exists in desired, but check if we have more pods than desired
+			currentCount := int32(len(pods))
+			if currentCount > desiredCount {
+				// We have more pods than desired, delete the excess
+				excessCount := int(currentCount - desiredCount)
+				logger.Info("Deleting excess launcher pods",
+					"node", key.NodeName,
+					"config", key.LauncherConfigName,
+					"namespace", key.LauncherConfigNamespace,
+					"current", currentCount,
+					"desired", desiredCount,
+					"excess", excessCount)
+
+				if err := ctl.deleteExcessLaunchers(ctx, pods, excessCount); err != nil {
+					logger.Error(err, "Failed to delete excess launcher pods",
+						"node", key.NodeName,
+						"config", key.LauncherConfigName)
+					// Continue with other pods
+				}
+			}
+		}
+	}
+
 	return nil
 }
 
