@@ -252,7 +252,7 @@ func (item lppItem) process(ctx context.Context, ctl *controller) (error, bool) 
 		}
 	}
 
-	logger.Info("Final population policy", "policy", mapToString(populationPolicy))
+	logger.Info("Final population policy", "policy", MapToLoggable(populationPolicy))
 	// Adjust launcher pods according to final requirements
 	if err := ctl.reconcileAllLaunchers(ctx, populationPolicy); err != nil {
 		logger.Error(err, "Failed to reconcile launchers")
