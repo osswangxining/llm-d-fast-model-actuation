@@ -32,6 +32,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	apitypes "k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/sets"
 	corev1preinformers "k8s.io/client-go/informers/core/v1"
@@ -419,6 +420,8 @@ func (ctl *controller) OnAdd(obj any, isInInitialList bool) {
 		}
 	case *fmav1alpha1.InferenceServerConfig:
 		ctl.enqueueRequestersByInferenceServerConfig(typed, isInInitialList)
+	case *fmav1alpha1.LauncherConfig:
+		ctl.enqueueRequestersByLauncherConfig(typed, isInInitialList)
 	case *corev1.ConfigMap:
 		if typed.Name != GPUMapName {
 			ctl.enqueueLogger.V(5).Info("Ignoring ConfigMap that is not the GPU map", "ref", cache.MetaObjectToName(typed))
@@ -460,6 +463,8 @@ func (ctl *controller) OnUpdate(prev, obj any) {
 		}
 	case *fmav1alpha1.InferenceServerConfig:
 		ctl.enqueueRequestersByInferenceServerConfig(typed, false)
+	case *fmav1alpha1.LauncherConfig:
+		ctl.enqueueRequestersByLauncherConfig(typed, false)
 	case *corev1.ConfigMap:
 		if typed.Name != GPUMapName {
 			ctl.enqueueLogger.V(5).Info("Ignoring ConfigMap that is not the GPU map", "ref", cache.MetaObjectToName(typed))
@@ -504,6 +509,8 @@ func (ctl *controller) OnDelete(obj any) {
 		}
 	case *fmav1alpha1.InferenceServerConfig:
 		ctl.enqueueRequestersByInferenceServerConfig(typed, false)
+	case *fmav1alpha1.LauncherConfig:
+		ctl.enqueueRequestersByLauncherConfig(typed, false)
 	case *corev1.ConfigMap:
 		if typed.Name != GPUMapName {
 			ctl.enqueueLogger.V(5).Info("Ignoring ConfigMap that is not the GPU map", "ref", cache.MetaObjectToName(typed))
@@ -625,6 +632,61 @@ func (ctl *controller) enqueueRequestersByInferenceServerConfig(isc *fmav1alpha1
 		nd.add(item)
 		nodeNames.Insert(nodeName)
 	}
+	for nodeName := range nodeNames {
+		ctl.Queue.Add(nodeItem{nodeName})
+	}
+}
+
+// enqueueRequestersByLauncherConfig enqueues all server-requesting Pods that
+// use InferenceServerConfigs referencing this LauncherConfig.
+func (ctl *controller) enqueueRequestersByLauncherConfig(lc *fmav1alpha1.LauncherConfig, isInInitialList bool) {
+	launcherConfigName := lc.Name
+	logger := ctl.enqueueLogger.WithValues("launcherConfigName", launcherConfigName)
+
+	// Get all InferenceServerConfigs that reference this LauncherConfig
+	allISCs, err := ctl.iscLister.InferenceServerConfigs(ctl.namespace).List(labels.Everything())
+	if err != nil {
+		logger.Error(err, "Failed to list InferenceServerConfigs")
+		return
+	}
+
+	nodeNames := sets.New[string]()
+	for _, isc := range allISCs {
+		if isc.Spec.LauncherConfigName != launcherConfigName {
+			continue
+		}
+
+		// Get all server-requesting Pods that use this InferenceServerConfig
+		requesters, err := ctl.podInformer.GetIndexer().ByIndex(
+			inferenceServerConfigIndexName,
+			isc.Name,
+		)
+		if err != nil {
+			logger.Error(err, "Failed to get server-requesting pods for InferenceServerConfig",
+				"inferenceServerConfigName", isc.Name)
+			continue
+		}
+
+		for _, podObj := range requesters {
+			pod := podObj.(*corev1.Pod)
+			item, it := careAbout(pod)
+			if it != infSvrItemRequester {
+				continue
+			}
+			nodeName := pod.Spec.NodeName
+			if nodeName == "" {
+				logger.V(5).Info("Ignoring non-scheduled server-requesting Pod",
+					"pod", pod.Name)
+				continue
+			}
+			nd := ctl.getNodeData(nodeName)
+			logger.V(5).Info("Enqueuing inference server reference due to LauncherConfig change",
+				"nodeName", nodeName, "item", item, "pod", pod.Name)
+			nd.add(item)
+			nodeNames.Insert(nodeName)
+		}
+	}
+
 	for nodeName := range nodeNames {
 		ctl.Queue.Add(nodeItem{nodeName})
 	}
