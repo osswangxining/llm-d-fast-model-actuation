@@ -413,16 +413,17 @@ func (ctl *controller) reconcileLaunchersOnSingleNode(ctx context.Context, nodeN
 				logger.Error(err, "Invalid PodTemplate in LauncherConfig, reporting in Status",
 					"node", nodeName, "config", key.LauncherConfigName)
 				if lc, lcErr := ctl.lcLister.LauncherConfigs(ctl.namespace).Get(key.LauncherConfigName); lcErr == nil {
-					if statusErr := ctl.reportLCTemplateError(ctx, lc, err); statusErr != nil {
+					if statusErr := ctl.setLCStatusErrors(ctx, lc, []string{err.Error()}); statusErr != nil {
 						logger.Error(statusErr, "Failed to update Status for LauncherConfig", "config", key.LauncherConfigName)
 					}
 				}
 				continue
 			}
 			nominalHash = nominalPod.Annotations[string(common.LauncherConfigHashAnnotationKey)]
-			// Clear any previously reported template errors now that the PodTemplate is valid.
+			// Unconditionally ensure the LauncherConfig Status reflects the current state.
+			// setLCStatusErrors is idempotent and skips the API call if Status is already correct.
 			if lc, lcErr := ctl.lcLister.LauncherConfigs(ctl.namespace).Get(key.LauncherConfigName); lcErr == nil {
-				if statusErr := ctl.clearLCTemplateError(ctx, lc); statusErr != nil {
+				if statusErr := ctl.setLCStatusErrors(ctx, lc, nil); statusErr != nil {
 					logger.Error(statusErr, "Failed to clear Status errors for LauncherConfig", "config", key.LauncherConfigName)
 				}
 			}

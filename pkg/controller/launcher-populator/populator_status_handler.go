@@ -29,28 +29,19 @@ func (ctl *controller) setLPPStatusErrors(ctx context.Context, lpp *fmav1alpha1.
 	return err
 }
 
-// reportLCTemplateError writes a PodTemplate validation error into the LauncherConfig's
-// Status.Errors field using Server-Side Apply so the user can observe it via kubectl.
-func (ctl *controller) reportLCTemplateError(ctx context.Context, lc *fmav1alpha1.LauncherConfig, templateErr error) error {
-	apply := applyfmav1alpha1.LauncherConfig(lc.Name, lc.Namespace).
-		WithStatus(applyfmav1alpha1.LauncherConfigStatus().
-			WithErrors(templateErr.Error()))
-	_, err := ctl.fmaclient.LauncherConfigs(lc.Namespace).ApplyStatus(ctx, apply, metav1.ApplyOptions{
-		FieldManager: ControllerName,
-		Force:        true,
-	})
-	return err
-}
-
-// clearLCTemplateError clears any previously reported template errors from the
-// LauncherConfig's Status.Errors field using Server-Side Apply.
-func (ctl *controller) clearLCTemplateError(ctx context.Context, lc *fmav1alpha1.LauncherConfig) error {
-	if len(lc.Status.Errors) == 0 {
-		// Nothing to clear.
+// setLCStatusErrors sets the LauncherConfig's Status.Errors to desiredErrors using
+// Server-Side Apply. Pass nil or an empty slice to clear all errors.
+// The call is skipped when the current Status already matches (same errors and same
+// ObservedGeneration), avoiding unnecessary API round-trips.
+func (ctl *controller) setLCStatusErrors(ctx context.Context, lc *fmav1alpha1.LauncherConfig, desiredErrors []string) error {
+	if lc.Status.ObservedGeneration == lc.Generation && slices.Equal(lc.Status.Errors, desiredErrors) {
+		// Status already reflects the desired state; nothing to do.
 		return nil
 	}
 	apply := applyfmav1alpha1.LauncherConfig(lc.Name, lc.Namespace).
-		WithStatus(applyfmav1alpha1.LauncherConfigStatus())
+		WithStatus(applyfmav1alpha1.LauncherConfigStatus().
+			WithObservedGeneration(lc.Generation).
+			WithErrors(desiredErrors...))
 	_, err := ctl.fmaclient.LauncherConfigs(lc.Namespace).ApplyStatus(ctx, apply, metav1.ApplyOptions{
 		FieldManager: ControllerName,
 		Force:        true,
