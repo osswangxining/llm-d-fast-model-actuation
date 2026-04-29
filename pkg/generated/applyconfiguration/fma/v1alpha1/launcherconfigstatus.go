@@ -20,13 +20,22 @@ package v1alpha1
 // LauncherConfigStatusApplyConfiguration represents a declarative configuration of the LauncherConfigStatus type for use
 // with apply.
 type LauncherConfigStatusApplyConfiguration struct {
-	Errors []string `json:"errors,omitempty"`
+	ObservedGeneration *int64   `json:"observedGeneration,omitempty"`
+	Errors             []string `json:"errors,omitempty"`
 }
 
 // LauncherConfigStatusApplyConfiguration constructs a declarative configuration of the LauncherConfigStatus type for use with
 // apply.
 func LauncherConfigStatus() *LauncherConfigStatusApplyConfiguration {
 	return &LauncherConfigStatusApplyConfiguration{}
+}
+
+// WithObservedGeneration sets the ObservedGeneration field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the ObservedGeneration field is set to the value of the last call.
+func (b *LauncherConfigStatusApplyConfiguration) WithObservedGeneration(value int64) *LauncherConfigStatusApplyConfiguration {
+	b.ObservedGeneration = &value
+	return b
 }
 
 // WithErrors adds the given value to the Errors field in the declarative configuration

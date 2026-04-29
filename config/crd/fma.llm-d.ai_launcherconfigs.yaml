@@ -8485,6 +8485,11 @@ spec:
                 items:
                   type: string
                 type: array
+              observedGeneration:
+                description: '`observedGeneration` is the `metadata.generation` last
+                  seen by the controller.'
+                format: int64
+                type: integer
             type: object
         required:
         - spec
