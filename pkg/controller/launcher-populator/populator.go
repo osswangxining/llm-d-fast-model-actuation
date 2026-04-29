@@ -246,19 +246,21 @@ func (ctl *controller) buildDesiredStateFromPolicies(ctx context.Context) (map[N
 			// This is a user error: the LabelSelector in the policy's EnhancedNodeSelector is invalid.
 			// Report it in the policy's Status.Errors so the user can see it via kubectl.
 			logger.Error(selectorErr, "Invalid LabelSelector in policy, reporting in Status", "policy", lpp.Name)
-			if statusErr := ctl.reportLPPSelectorError(ctx, lpp, selectorErr); statusErr != nil {
+			if statusErr := ctl.setLPPStatusErrors(ctx, lpp, []string{selectorErr.Error()}); statusErr != nil {
 				logger.Error(statusErr, "Failed to update Status for policy", "policy", lpp.Name)
 			}
 			continue
+		}
+		// Clear any previously reported selector errors now that the selector is valid.
+		// This is done as soon as selectorErr == nil, before checking err, so that a
+		// transient infrastructure error does not prevent stale Status errors from being cleared.
+		if statusErr := ctl.setLPPStatusErrors(ctx, lpp, nil); statusErr != nil {
+			logger.Error(statusErr, "Failed to clear Status errors for policy", "policy", lpp.Name)
 		}
 		if err != nil {
 			// This is an infrastructure error: the lister failed to list nodes.
 			logger.Error(err, "Failed to get matching nodes for policy", "policy", lpp.Name)
 			continue
-		}
-		// Clear any previously reported selector errors now that the selector is valid.
-		if statusErr := ctl.clearLPPSelectorError(ctx, lpp); statusErr != nil {
-			logger.Error(statusErr, "Failed to clear Status errors for policy", "policy", lpp.Name)
 		}
 
 		for _, countRule := range lpp.Spec.CountForLauncher {
