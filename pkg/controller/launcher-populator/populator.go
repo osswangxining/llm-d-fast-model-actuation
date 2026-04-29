@@ -331,6 +331,8 @@ func (ctl *controller) getMatchingNodes(ctx context.Context, selector fmav1alpha
 // reconcileAllLaunchers adjusts all launcher pods according to final requirements.
 // It returns true if a requeue is needed (deletions were performed or are in progress),
 // so that creations happen only after deletions have taken effect.
+// If any node fails reconciliation, its error is returned so the caller can trigger
+// a retry rather than losing the failure.
 func (ctl *controller) reconcileAllLaunchers(ctx context.Context, desired map[NodeLauncherKey]DesiredStateEntry) (bool, error) {
 	logger := klog.FromContext(ctx)
 
@@ -341,17 +343,20 @@ func (ctl *controller) reconcileAllLaunchers(ctx context.Context, desired map[No
 	}
 
 	anyRequeueNeeded := false
+	var firstErr error
 	for nodeName, keys := range nodeGroups {
 		needsRequeue, err := ctl.reconcileLaunchersOnSingleNode(ctx, nodeName, keys, desired)
 		if err != nil {
 			logger.Error(err, "Failed to reconcile launchers on node", "node", nodeName)
-			anyRequeueNeeded = true
+			if firstErr == nil {
+				firstErr = err
+			}
 			continue
 		}
 		anyRequeueNeeded = anyRequeueNeeded || needsRequeue
 	}
 
-	return anyRequeueNeeded, nil
+	return anyRequeueNeeded, firstErr
 }
 
 // reconcileLaunchersOnSingleNode handles all LauncherConfigs for a single node.
