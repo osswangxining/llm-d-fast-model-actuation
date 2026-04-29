@@ -57,6 +57,9 @@ type LauncherConfigSpec struct {
 
 // LauncherConfigStatus represents the current status
 type LauncherConfigStatus struct {
+	// `errors` reports problems seen in the desired state of this object.
+	// +optional
+	Errors []string `json:"errors,omitempty"`
 }
 
 // +genclient

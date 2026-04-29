@@ -28,3 +28,32 @@ func (ctl *controller) setLPPStatusErrors(ctx context.Context, lpp *fmav1alpha1.
 	})
 	return err
 }
+
+// reportLCTemplateError writes a PodTemplate validation error into the LauncherConfig's
+// Status.Errors field using Server-Side Apply so the user can observe it via kubectl.
+func (ctl *controller) reportLCTemplateError(ctx context.Context, lc *fmav1alpha1.LauncherConfig, templateErr error) error {
+	apply := applyfmav1alpha1.LauncherConfig(lc.Name, lc.Namespace).
+		WithStatus(applyfmav1alpha1.LauncherConfigStatus().
+			WithErrors(templateErr.Error()))
+	_, err := ctl.fmaclient.LauncherConfigs(lc.Namespace).ApplyStatus(ctx, apply, metav1.ApplyOptions{
+		FieldManager: ControllerName,
+		Force:        true,
+	})
+	return err
+}
+
+// clearLCTemplateError clears any previously reported template errors from the
+// LauncherConfig's Status.Errors field using Server-Side Apply.
+func (ctl *controller) clearLCTemplateError(ctx context.Context, lc *fmav1alpha1.LauncherConfig) error {
+	if len(lc.Status.Errors) == 0 {
+		// Nothing to clear.
+		return nil
+	}
+	apply := applyfmav1alpha1.LauncherConfig(lc.Name, lc.Namespace).
+		WithStatus(applyfmav1alpha1.LauncherConfigStatus())
+	_, err := ctl.fmaclient.LauncherConfigs(lc.Namespace).ApplyStatus(ctx, apply, metav1.ApplyOptions{
+		FieldManager: ControllerName,
+		Force:        true,
+	})
+	return err
+}

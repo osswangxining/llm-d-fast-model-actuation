@@ -408,12 +408,23 @@ func (ctl *controller) reconcileLaunchersOnSingleNode(ctx context.Context, nodeN
 			nominalPod, err := utils.BuildLauncherPodFromTemplate(
 				entry.LauncherConfigSpec.PodTemplate, ctl.namespace, key.NodeName, key.LauncherConfigName)
 			if err != nil {
-				// The only error possible here is that the PodTemplate lacks an inference server container.
-				// In that case we proceed without a nominal hash, so no stale-pod detection occurs for this config.
-				logger.Error(err, "Failed to build nominal pod for hash comparison",
+				// This is a user error: the PodTemplate lacks an inference server container.
+				// Report it in the LauncherConfig's Status.Errors so the user can see it via kubectl.
+				logger.Error(err, "Invalid PodTemplate in LauncherConfig, reporting in Status",
 					"node", nodeName, "config", key.LauncherConfigName)
-			} else {
-				nominalHash = nominalPod.Annotations[string(common.LauncherConfigHashAnnotationKey)]
+				if lc, lcErr := ctl.lcLister.LauncherConfigs(ctl.namespace).Get(key.LauncherConfigName); lcErr == nil {
+					if statusErr := ctl.reportLCTemplateError(ctx, lc, err); statusErr != nil {
+						logger.Error(statusErr, "Failed to update Status for LauncherConfig", "config", key.LauncherConfigName)
+					}
+				}
+				continue
+			}
+			nominalHash = nominalPod.Annotations[string(common.LauncherConfigHashAnnotationKey)]
+			// Clear any previously reported template errors now that the PodTemplate is valid.
+			if lc, lcErr := ctl.lcLister.LauncherConfigs(ctl.namespace).Get(key.LauncherConfigName); lcErr == nil {
+				if statusErr := ctl.clearLCTemplateError(ctx, lc); statusErr != nil {
+					logger.Error(statusErr, "Failed to clear Status errors for LauncherConfig", "config", key.LauncherConfigName)
+				}
 			}
 		}
 
