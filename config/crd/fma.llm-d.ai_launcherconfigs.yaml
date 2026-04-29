@@ -8478,6 +8478,13 @@ spec:
             type: object
           status:
             description: Status represents the observed status of the LauncherConfig.
+            properties:
+              errors:
+                description: '`errors` reports problems seen in the desired state
+                  of this object.'
+                items:
+                  type: string
+                type: array
             type: object
         required:
         - spec

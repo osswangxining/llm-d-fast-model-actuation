@@ -23,7 +23,7 @@ type LauncherConfigStatusApplyConfiguration struct {
 	Errors []string `json:"errors,omitempty"`
 }
 
-// LauncherConfigStatus constructs a declarative configuration of the LauncherConfigStatus type for use with
+// LauncherConfigStatusApplyConfiguration constructs a declarative configuration of the LauncherConfigStatus type for use with
 // apply.
 func LauncherConfigStatus() *LauncherConfigStatusApplyConfiguration {
 	return &LauncherConfigStatusApplyConfiguration{}
