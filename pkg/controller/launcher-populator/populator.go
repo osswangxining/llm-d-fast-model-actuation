@@ -18,6 +18,7 @@ package launcherpopulator
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -244,6 +245,10 @@ func (ctl *controller) buildDesiredStateFromPolicies(ctx context.Context) (map[N
 	// multiple count rules; we only need one Status update per LC per cycle.
 	lcStatusReported := make(map[string]struct{})
 
+	// nodeSleepingBudgets collects the most restrictive NodeSleepingBudget for each node.
+	// When multiple policies match the same node, the smallest MaxInstances and MaxMemory win.
+	nodeSleepingBudgets := make(map[string]*fmav1alpha1.NodeSleepingBudget)
+
 	desired := make(map[NodeLauncherKey]DesiredStateEntry)
 	for _, lpp := range policies {
 		nodes, selectorErrs, err := ctl.getMatchingNodes(ctx, lpp.Spec.EnhancedNodeSelector)
@@ -255,6 +260,14 @@ func (ctl *controller) buildDesiredStateFromPolicies(ctx context.Context) (map[N
 			// This is an infrastructure error: the lister failed to list nodes.
 			logger.Error(err, "Failed to get matching nodes for policy", "policy", lpp.Name)
 			continue
+		}
+
+		// Record node-level sleeping budget for each matched node.
+		if lpp.Spec.NodeSleepingBudget != nil {
+			for _, node := range nodes {
+				nodeSleepingBudgets[node.Name] = mergeSleepingBudgets(
+					nodeSleepingBudgets[node.Name], lpp.Spec.NodeSleepingBudget)
+			}
 		}
 
 		for _, countRule := range lpp.Spec.CountForLauncher {
@@ -310,6 +323,7 @@ func (ctl *controller) buildDesiredStateFromPolicies(ctx context.Context) (map[N
 						Count:                  countRule.LauncherCount,
 						LauncherConfigSpec:     &lc.Spec,
 						LauncherConfigOwnerRef: ownerRef,
+						NodeSleepingBudget:     nodeSleepingBudgets[node.Name],
 					}
 				}
 			}
@@ -396,10 +410,11 @@ func (ctl *controller) reconcileLaunchersOnSingleNode(ctx context.Context, nodeN
 	deletionShortfall := false  // excess-pod deletion loop could not delete as many as needed
 
 	type creationInfo struct {
-		key   NodeLauncherKey
-		count int
-		spec  *fmav1alpha1.LauncherConfigSpec
-		owner metav1.OwnerReference
+		key                NodeLauncherKey
+		count              int
+		spec               *fmav1alpha1.LauncherConfigSpec
+		owner              metav1.OwnerReference
+		nodeSleepingBudget *fmav1alpha1.NodeSleepingBudget
 	}
 	var creations []creationInfo
 
@@ -536,10 +551,11 @@ func (ctl *controller) reconcileLaunchersOnSingleNode(ctx context.Context, nodeN
 		} else if diff > 0 {
 			// Remember creations called for (will be executed only if no deletions)
 			creations = append(creations, creationInfo{
-				key:   key,
-				count: int(diff),
-				spec:  entry.LauncherConfigSpec,
-				owner: entry.LauncherConfigOwnerRef,
+				key:                key,
+				count:              int(diff),
+				spec:               entry.LauncherConfigSpec,
+				owner:              entry.LauncherConfigOwnerRef,
+				nodeSleepingBudget: entry.NodeSleepingBudget,
 			})
 		}
 	}
@@ -560,7 +576,7 @@ func (ctl *controller) reconcileLaunchersOnSingleNode(ctx context.Context, nodeN
 	// No deletions needed, proceed with planned creations
 	totalCreated := 0
 	for _, creation := range creations {
-		if err := ctl.createLaunchers(ctx, *node, creation.key, creation.count, creation.spec, creation.owner); err != nil {
+		if err := ctl.createLaunchers(ctx, *node, creation.key, creation.count, creation.spec, creation.owner, creation.nodeSleepingBudget); err != nil {
 			logger.Error(err, "Failed to create launchers for config",
 				"node", nodeName,
 				"config", creation.key.LauncherConfigName,
@@ -600,8 +616,20 @@ func (ctl *controller) getCurrentLaunchersOnNode(ctx context.Context, key NodeLa
 
 // createLaunchers creates the specified number of launcher pods on a node
 // using the given LauncherConfig spec and owner reference directly (no additional lookup needed).
-func (ctl *controller) createLaunchers(ctx context.Context, node corev1.Node, key NodeLauncherKey, count int, lcSpec *fmav1alpha1.LauncherConfigSpec, lcOwnerRef metav1.OwnerReference) error {
+// If nodeSleepingBudget is non-nil, it is serialized as JSON and attached to each created pod
+// as the NodeSleepingBudgetAnnotationKey annotation, so the dual-pods controller can enforce
+// node-level sleeper budgets.
+func (ctl *controller) createLaunchers(ctx context.Context, node corev1.Node, key NodeLauncherKey, count int, lcSpec *fmav1alpha1.LauncherConfigSpec, lcOwnerRef metav1.OwnerReference, nodeSleepingBudget *fmav1alpha1.NodeSleepingBudget) error {
 	logger := klog.FromContext(ctx)
+
+	var budgetAnnotation string
+	if nodeSleepingBudget != nil {
+		budgetJSON, err := json.Marshal(nodeSleepingBudget)
+		if err != nil {
+			return fmt.Errorf("failed to marshal node sleeping budget: %w", err)
+		}
+		budgetAnnotation = string(budgetJSON)
+	}
 
 	// Create the specified number of launcher pods
 	for i := 0; i < count; i++ {
@@ -610,6 +638,13 @@ func (ctl *controller) createLaunchers(ctx context.Context, node corev1.Node, ke
 			return fmt.Errorf("failed to build launcher pod: %w", err)
 		}
 		pod.OwnerReferences = []metav1.OwnerReference{lcOwnerRef}
+
+		if budgetAnnotation != "" {
+			if pod.Annotations == nil {
+				pod.Annotations = make(map[string]string)
+			}
+			pod.Annotations[common.NodeSleepingBudgetAnnotationKey] = budgetAnnotation
+		}
 
 		if _, err := ctl.coreclient.Pods(pod.Namespace).Create(ctx, pod, metav1.CreateOptions{}); err != nil {
 			return fmt.Errorf("failed to create launcher pod: %w", err)

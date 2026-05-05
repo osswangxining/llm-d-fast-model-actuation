@@ -24,6 +24,32 @@ import (
 	fmav1alpha1 "github.com/llm-d-incubation/llm-d-fast-model-actuation/api/fma/v1alpha1"
 )
 
+// mergeSleepingBudgets returns the most restrictive of the two budgets.
+// The result uses the smaller MaxInstances and the smaller MaxMemory.
+// If either input is nil, the other is returned. If both are nil, nil is returned.
+func mergeSleepingBudgets(a, b *fmav1alpha1.NodeSleepingBudget) *fmav1alpha1.NodeSleepingBudget {
+	if a == nil {
+		return b
+	}
+	if b == nil {
+		return a
+	}
+	result := &fmav1alpha1.NodeSleepingBudget{
+		MaxInstances: a.MaxInstances,
+	}
+	if b.MaxInstances < result.MaxInstances {
+		result.MaxInstances = b.MaxInstances
+	}
+	if a.MaxMemory != nil && b.MaxMemory != nil {
+		if a.MaxMemory.Cmp(*b.MaxMemory) < 0 {
+			result.MaxMemory = a.MaxMemory
+		} else {
+			result.MaxMemory = b.MaxMemory
+		}
+	}
+	return result
+}
+
 // NodeLauncherKey defines the unique identifier for a (Node, LauncherConfig) pair
 type NodeLauncherKey struct {
 	LauncherConfigName string
@@ -40,6 +66,10 @@ type DesiredStateEntry struct {
 	Count                  int32
 	LauncherConfigSpec     *fmav1alpha1.LauncherConfigSpec
 	LauncherConfigOwnerRef metav1.OwnerReference
+	// NodeSleepingBudget is the node-level resource budget for sleeping instances
+	// across all launcher pods on this node. It is inherited from the
+	// LauncherPopulationPolicy that matched this node.
+	NodeSleepingBudget *fmav1alpha1.NodeSleepingBudget
 }
 
 func (e DesiredStateEntry) String() string {
