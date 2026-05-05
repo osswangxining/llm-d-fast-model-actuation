@@ -929,6 +929,58 @@ func (ctl *controller) enforceSleeperBudget(ctx context.Context, serverDat *serv
 			}
 		}
 	}
+
+	// Enforce node-level sleeping budget for launcher-based pods.
+	nodePodAnys, err := ctl.podInformer.GetIndexer().ByIndex(nodeNameIndexName, requestingPod.Spec.NodeName)
+	if err != nil { // impossible
+		return err, false
+	}
+	var nodeSleepingPods []*corev1.Pod
+	var nodeBudget *fmav1alpha1.NodeSleepingBudget
+	for _, podAny := range nodePodAnys {
+		pod := podAny.(*corev1.Pod)
+		if _, hasLauncherLabel := pod.Labels[ctlrcommon.LauncherConfigNameLabelKey]; !hasLauncherLabel {
+			continue
+		}
+		if len(pod.Annotations[requesterAnnotationKey]) > 0 {
+			continue // bound, not sleeping
+		}
+		if gonerNames.Has(pod.Name) {
+			continue // already being deleted
+		}
+		nodeSleepingPods = append(nodeSleepingPods, pod)
+		if nodeBudget == nil {
+			if budgetStr := pod.Annotations[ctlrcommon.NodeSleepingBudgetAnnotationKey]; budgetStr != "" {
+				var budget fmav1alpha1.NodeSleepingBudget
+				if jsonErr := json.Unmarshal([]byte(budgetStr), &budget); jsonErr == nil {
+					nodeBudget = &budget
+				} else {
+					logger.V(4).Info("Failed to unmarshal node sleeping budget annotation", "pod", pod.Name, "err", jsonErr)
+				}
+			}
+		}
+	}
+	if nodeBudget != nil && nodeBudget.MaxInstances > 0 {
+		toGo := len(nodeSleepingPods) - int(nodeBudget.MaxInstances)
+		if toGo > 0 {
+			slices.SortFunc(nodeSleepingPods, comparePods)
+			for idx, goner := range nodeSleepingPods[:toGo] {
+				gonerNames.Insert(goner.Name)
+				err := podOps.Delete(ctx, goner.Name, metav1.DeleteOptions{
+					Preconditions:     &metav1.Preconditions{UID: &goner.UID, ResourceVersion: &goner.ResourceVersion},
+					PropagationPolicy: ptr.To(metav1.DeletePropagationBackground),
+				})
+				if err == nil {
+					logger.V(2).Info("Deleted server-providing Pod with sleeping server, to respect node-level sleeper budget", "idx", idx, "total", len(nodeSleepingPods), "nodeBudget", nodeBudget.MaxInstances, "name", goner.Name, "resourceVersion", goner.ResourceVersion)
+				} else if apierrors.IsNotFound(err) || apierrors.IsGone(err) {
+					logger.V(5).Info("Server-providing Pod was concurrently deleted", "name", goner.Name)
+				} else {
+					return fmt.Errorf("unable to delete server-providing Pod %s (RV=%s): %w", goner.Name, goner.ResourceVersion, err), true
+				}
+			}
+		}
+	}
+
 	return nil, len(gonerNames) > 0
 }
 
